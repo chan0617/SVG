@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>이미지 → SVG 벡터화 변환기</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <h1>🖼️ → 📐 이미지 SVG 벡터화 변환기</h1>
+      <p class="subtitle">이미지를 업로드하면 브라우저 안에서 바로 path 기반 SVG로 변환합니다. 서버로 전송되는 데이터는 없습니다.</p>
+    </header>
+
+    <main>
+      <section id="drop-zone" class="drop-zone">
+        <div class="drop-zone-content">
+          <div class="drop-icon">📤</div>
+          <p><strong>여기로 이미지를 드래그 앤 드롭</strong>하거나</p>
+          <button id="select-btn" type="button" class="btn btn-primary">이미지 선택</button>
+          <input
+            id="file-input"
+            type="file"
+            accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+            multiple
+            hidden
+          />
+          <p class="hint">지원 형식: PNG, JPG, JPEG, WEBP (여러 장 동시 업로드 가능)</p>
+        </div>
+      </section>
+
+      <p class="notice">
+        ⚠️ 참고: 로고, 아이콘, 단순한 일러스트, 흑백 이미지는 결과가 깔끔하게 나옵니다.
+        하지만 사람 얼굴, 풍경 사진처럼 <strong>복잡하고 색이 많은 사진은 완벽한 벡터화가 어려우며</strong>,
+        결과물이 원본과 다르게 보일 수 있습니다.
+      </p>
+
+      <section id="file-list-section" class="file-list-section hidden">
+        <div class="section-header">
+          <h2>업로드한 파일</h2>
+          <button id="zip-download-btn" class="btn btn-secondary" disabled>
+            📦 전체 ZIP 다운로드
+          </button>
+        </div>
+        <ul id="file-list" class="file-list"></ul>
+      </section>
+
+      <section id="preview-section" class="preview-section hidden">
+        <h2>SVG 미리보기</h2>
+        <div id="preview-grid" class="preview-grid"></div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <p>모든 변환은 사용자의 브라우저 안에서만 이루어지며, 이미지가 외부 서버로 업로드되지 않습니다.</p>
+    </footer>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
