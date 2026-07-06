@@ -26,6 +26,27 @@ const zipDownloadBtn = document.getElementById("zip-download-btn");
 const jobs = new Map();
 let jobSeq = 0;
 
+// 여러 이미지를 한꺼번에 변환하면 메모리 사용량과 CPU 부하가 겹쳐 탭이 멈추거나
+// 흰 화면으로 크래시할 수 있어, 한 번에 하나씩만 처리하는 순차 큐를 사용한다.
+const conversionQueue = [];
+let isProcessingQueue = false;
+
+function enqueueJob(job) {
+  conversionQueue.push(job);
+  if (!isProcessingQueue) processQueue();
+}
+
+async function processQueue() {
+  isProcessingQueue = true;
+  while (conversionQueue.length) {
+    const job = conversionQueue.shift();
+    await convertJob(job);
+    // 브라우저가 상태 표시를 그리고 다른 이벤트를 처리할 수 있도록 한 틱 양보한다.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  isProcessingQueue = false;
+}
+
 selectBtn.addEventListener("click", () => fileInput.click());
 dropZone.addEventListener("click", (e) => {
   if (e.target === selectBtn) return;
@@ -76,7 +97,7 @@ function handleFiles(fileList) {
       continue;
     }
 
-    convertJob(job);
+    enqueueJob(job);
   }
 }
 
