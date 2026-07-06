@@ -205,19 +205,59 @@ async function convertJob(job) {
 
   try {
     const imageData = await loadImageData(job.file);
-    const svgString = ImageTracer.imagedataToSVG(imageData, TRACE_OPTIONS);
+    const rawSvg = ImageTracer.imagedataToSVG(imageData, TRACE_OPTIONS);
 
-    if (!svgString || !svgString.includes("<svg")) {
+    if (!rawSvg || !rawSvg.includes("<svg")) {
       throw new Error("SVG 생성 결과가 비어 있습니다.");
     }
 
-    job.svgString = svgString;
+    job.svgString = optimizeSvgForUpload(rawSvg);
     updateJobStatus(job, "done");
     renderPreviewCard(job);
   } catch (err) {
     console.error(`[${job.file.name}] 변환 실패:`, err);
     updateJobStatus(job, "error", describeError(err));
   }
+}
+
+// imagetracerjs는 색상별로 도형마다 별도의 <path>를 만들고, 인접 도형 사이의
+// 안티앨리어싱 틈을 메우기 위해 모든 path에 stroke를 추가한다. 스티커 마켓
+// 업로드 검증(디자인 요소 30개 이하, stroke 속성 금지)을 통과시키기 위해
+// 같은 색상(fill+opacity)의 path를 하나로 합치고 stroke 속성을 제거한다.
+// 병합해도 각 path는 자신의 하위 도형/구멍을 그대로 유지하므로 겉보기는 동일하다.
+// (병합 후 path 개수는 항상 TRACE_OPTIONS.numberofcolors 이하로 고정된다.)
+function optimizeSvgForUpload(svgString) {
+  const openTagMatch = svgString.match(/<svg\b[^>]*>/);
+  if (!openTagMatch) return svgString;
+
+  const groups = new Map();
+  const pathRegex = /<path\b([^>]*?)\/>/g;
+  let match;
+  while ((match = pathRegex.exec(svgString))) {
+    const attrs = match[1];
+    const fill = getAttr(attrs, "fill") || "none";
+    const opacity = getAttr(attrs, "opacity") || "1";
+    const d = getAttr(attrs, "d").trim();
+    if (!d) continue;
+
+    const key = `${fill}__${opacity}`;
+    if (!groups.has(key)) groups.set(key, { fill, opacity, dParts: [] });
+    groups.get(key).dParts.push(d);
+  }
+
+  const mergedPaths = Array.from(groups.values())
+    .map(({ fill, opacity, dParts }) => {
+      const opacityAttr = opacity !== "1" ? ` opacity="${opacity}"` : "";
+      return `<path fill="${fill}"${opacityAttr} d="${dParts.join(" ")}" />`;
+    })
+    .join("");
+
+  return `${openTagMatch[0]}${mergedPaths}</svg>`;
+}
+
+function getAttr(attrString, name) {
+  const match = attrString.match(new RegExp(`${name}="([^"]*)"`));
+  return match ? match[1] : "";
 }
 
 function describeError(err) {
