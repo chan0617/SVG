@@ -10,9 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "imagetracerjs": "^1.2.6",
-    "jszip": "^3.10.1",
-    "file-saver": "^2.0.5"
+    "file-saver": "^2.0.5",
+    "fit-curve": "^0.2.0",
+    "jszip": "^3.10.1"
   },
   "devDependencies": {
     "vite": "^8.1.3"

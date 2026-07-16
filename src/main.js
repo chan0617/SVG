@@ -1,17 +1,10 @@
-import ImageTracer from "imagetracerjs";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
+import { vectorizeImage } from "./pipeline/vectorize.js";
+import { PRESETS, DEFAULT_PRESET_ID } from "./pipeline/presets.js";
 
 const ACCEPTED_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
 const ACCEPTED_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"];
-const MAX_DIMENSION = 1600; // 변환 성능을 위해 긴 변 기준 최대 해상도를 제한합니다.
-
-const TRACE_OPTIONS = {
-  viewbox: true,
-  numberofcolors: 16,
-  mincolorratio: 0.02,
-  scale: 1,
-};
 
 const dropZone = document.getElementById("drop-zone");
 const fileInput = document.getElementById("file-input");
@@ -22,12 +15,59 @@ const previewSection = document.getElementById("preview-section");
 const previewGrid = document.getElementById("preview-grid");
 const zipDownloadBtn = document.getElementById("zip-download-btn");
 
+const presetButtons = Array.from(document.querySelectorAll(".preset-btn"));
+const colorCountInput = document.getElementById("color-count");
+const colorCountValue = document.getElementById("color-count-value");
+const smoothingInput = document.getElementById("smoothing");
+const smoothingValue = document.getElementById("smoothing-value");
+const keepShadingInput = document.getElementById("keep-shading");
+const detectLinesInput = document.getElementById("detect-lines");
+const removeShadowInput = document.getElementById("remove-shadow");
+const useCssClassesInput = document.getElementById("use-css-classes");
+
 /** @type {Map<string, Job>} */
 const jobs = new Map();
 let jobSeq = 0;
+let currentPresetId = DEFAULT_PRESET_ID;
 
-// 여러 이미지를 한꺼번에 변환하면 메모리 사용량과 CPU 부하가 겹쳐 탭이 멈추거나
-// 흰 화면으로 크래시할 수 있어, 한 번에 하나씩만 처리하는 순차 큐를 사용한다.
+function applyPresetToControls(presetId) {
+  const preset = PRESETS[presetId];
+  colorCountInput.value = preset.numColors;
+  colorCountValue.textContent = preset.numColors;
+  smoothingInput.value = preset.smoothing;
+  smoothingValue.textContent = preset.smoothing;
+  keepShadingInput.checked = preset.keepShading;
+  detectLinesInput.checked = preset.detectLines;
+  useCssClassesInput.checked = preset.useCssClasses;
+}
+applyPresetToControls(currentPresetId);
+
+presetButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    presetButtons.forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentPresetId = btn.dataset.preset;
+    applyPresetToControls(currentPresetId);
+  });
+});
+
+colorCountInput.addEventListener("input", () => (colorCountValue.textContent = colorCountInput.value));
+smoothingInput.addEventListener("input", () => (smoothingValue.textContent = smoothingInput.value));
+
+function currentOverrides() {
+  return {
+    numColors: Number(colorCountInput.value),
+    smoothing: Number(smoothingInput.value),
+    keepShading: keepShadingInput.checked,
+    detectLines: detectLinesInput.checked,
+    removeShadow: removeShadowInput.checked,
+    useCssClasses: useCssClassesInput.checked,
+  };
+}
+
+// 여러 이미지를 한꺼번에 변환하면 메모리/CPU 부하가 겹쳐 탭이 멈출 수 있어
+// 한 번에 하나씩만 처리하는 순차 큐를 사용한다. (OpenCV Mat도 GC되지 않아
+// 동시 처리 시 누수 위험이 커진다.)
 const conversionQueue = [];
 let isProcessingQueue = false;
 
@@ -41,7 +81,6 @@ async function processQueue() {
   while (conversionQueue.length) {
     const job = conversionQueue.shift();
     await convertJob(job);
-    // 브라우저가 상태 표시를 그리고 다른 이벤트를 처리할 수 있도록 한 틱 양보한다.
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   isProcessingQueue = false;
@@ -104,7 +143,7 @@ function handleFiles(fileList) {
 function isSupportedFile(file) {
   const ext = getExtension(file.name);
   const mimeOk = ACCEPTED_MIME_TYPES.includes(file.type) || file.type === "";
-  return ACCEPTED_EXTENSIONS.includes(ext) && (mimeOk || ACCEPTED_MIME_TYPES.includes(file.type));
+  return ACCEPTED_EXTENSIONS.includes(ext) && mimeOk;
 }
 
 function getExtension(filename) {
@@ -115,7 +154,13 @@ function getExtension(filename) {
 function toSvgFilename(filename) {
   const dot = filename.lastIndexOf(".");
   const base = dot > 0 ? filename.slice(0, dot) : filename;
-  return `${base}.svg`;
+  return `${base}_vector.svg`;
+}
+
+function toPngFilename(filename) {
+  const dot = filename.lastIndexOf(".");
+  const base = dot > 0 ? filename.slice(0, dot) : filename;
+  return `${base}_vector.png`;
 }
 
 function createJob(file) {
@@ -123,8 +168,11 @@ function createJob(file) {
   return {
     id: `job-${jobSeq}-${Date.now()}`,
     file,
-    status: "pending", // pending | processing | done | error
+    status: "pending",
     svgString: "",
+    stats: null,
+    width: 0,
+    height: 0,
     errorMessage: "",
     dom: {},
   };
@@ -152,10 +200,13 @@ function renderFileItem(job) {
   meta.className = "file-item-meta";
   meta.textContent = formatFileSize(job.file.size);
 
+  const progressText = document.createElement("div");
+  progressText.className = "file-item-progress";
+
   const errorText = document.createElement("div");
   errorText.className = "file-item-error hidden";
 
-  info.append(name, meta, errorText);
+  info.append(name, meta, progressText, errorText);
 
   const badge = document.createElement("span");
   badge.className = "status-badge pending";
@@ -164,7 +215,7 @@ function renderFileItem(job) {
   li.append(thumb, info, badge);
   fileListEl.appendChild(li);
 
-  job.dom = { li, badge, errorText };
+  job.dom = { li, badge, errorText, progressText };
 }
 
 function updateJobStatus(job, status, message = "") {
@@ -202,16 +253,20 @@ function updateZipButtonState() {
 
 async function convertJob(job) {
   updateJobStatus(job, "processing");
+  const presetId = currentPresetId;
+  const overrides = currentOverrides();
 
   try {
-    const imageData = await loadImageData(job.file);
-    const rawSvg = ImageTracer.imagedataToSVG(imageData, TRACE_OPTIONS);
+    const result = await vectorizeImage(job.file, presetId, overrides, (label, pct) => {
+      job.dom.progressText.textContent = `${label} (${pct}%)`;
+    });
 
-    if (!rawSvg || !rawSvg.includes("<svg")) {
-      throw new Error("SVG 생성 결과가 비어 있습니다.");
-    }
+    job.svgString = result.svgString;
+    job.stats = result.stats;
+    job.width = result.width;
+    job.height = result.height;
+    job.dom.progressText.textContent = "";
 
-    job.svgString = optimizeSvgForUpload(rawSvg);
     updateJobStatus(job, "done");
     renderPreviewCard(job);
   } catch (err) {
@@ -220,49 +275,12 @@ async function convertJob(job) {
   }
 }
 
-// imagetracerjs는 색상별로 도형마다 별도의 <path>를 만들고, 인접 도형 사이의
-// 안티앨리어싱 틈을 메우기 위해 모든 path에 stroke를 추가한다. 스티커 마켓
-// 업로드 검증(디자인 요소 30개 이하, stroke 속성 금지)을 통과시키기 위해
-// 같은 색상(fill+opacity)의 path를 하나로 합치고 stroke 속성을 제거한다.
-// 병합해도 각 path는 자신의 하위 도형/구멍을 그대로 유지하므로 겉보기는 동일하다.
-// (병합 후 path 개수는 항상 TRACE_OPTIONS.numberofcolors 이하로 고정된다.)
-function optimizeSvgForUpload(svgString) {
-  const openTagMatch = svgString.match(/<svg\b[^>]*>/);
-  if (!openTagMatch) return svgString;
-
-  const groups = new Map();
-  const pathRegex = /<path\b([^>]*?)\/>/g;
-  let match;
-  while ((match = pathRegex.exec(svgString))) {
-    const attrs = match[1];
-    const fill = getAttr(attrs, "fill") || "none";
-    const opacity = getAttr(attrs, "opacity") || "1";
-    const d = getAttr(attrs, "d").trim();
-    if (!d) continue;
-
-    const key = `${fill}__${opacity}`;
-    if (!groups.has(key)) groups.set(key, { fill, opacity, dParts: [] });
-    groups.get(key).dParts.push(d);
-  }
-
-  const mergedPaths = Array.from(groups.values())
-    .map(({ fill, opacity, dParts }) => {
-      const opacityAttr = opacity !== "1" ? ` opacity="${opacity}"` : "";
-      return `<path fill="${fill}"${opacityAttr} d="${dParts.join(" ")}" />`;
-    })
-    .join("");
-
-  return `${openTagMatch[0]}${mergedPaths}</svg>`;
-}
-
-function getAttr(attrString, name) {
-  const match = attrString.match(new RegExp(`${name}="([^"]*)"`));
-  return match ? match[1] : "";
-}
-
 function describeError(err) {
   if (err instanceof DOMException && err.name === "InvalidStateError") {
     return "이미지 파일을 읽을 수 없습니다. 파일이 손상되었을 수 있습니다.";
+  }
+  if (err?.message?.includes("OpenCV")) {
+    return err.message;
   }
   if (err?.message?.includes("decode")) {
     return "이미지를 디코딩할 수 없습니다. 파일 형식을 확인해주세요.";
@@ -270,79 +288,191 @@ function describeError(err) {
   return err?.message ? `변환 중 오류가 발생했습니다: ${err.message}` : "알 수 없는 오류로 변환에 실패했습니다.";
 }
 
-async function loadImageData(file) {
-  let bitmap;
-  try {
-    bitmap = await createImageBitmap(file);
-  } catch {
-    bitmap = await loadViaImageElement(file);
-  }
-
-  let { width, height } = bitmap;
-  const longestSide = Math.max(width, height);
-  if (longestSide > MAX_DIMENSION) {
-    const scale = MAX_DIMENSION / longestSide;
-    width = Math.round(width * scale);
-    height = Math.round(height * scale);
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.clearRect(0, 0, width, height);
-  ctx.drawImage(bitmap, 0, 0, width, height);
-
-  return ctx.getImageData(0, 0, width, height);
-}
-
-function loadViaImageElement(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("이미지를 불러오는 데 실패했습니다."));
-    };
-    img.src = url;
-  });
-}
+const FILL_GROUPS = ["shadow", "base-colors", "shading", "details", "logo"];
+const LINE_GROUPS = ["stitching", "laces", "outline"];
 
 function renderPreviewCard(job) {
   previewSection.classList.remove("hidden");
 
   const card = document.createElement("div");
   card.className = "preview-card";
+  card.dataset.view = "all";
+  card.dataset.bg = "transparent";
 
-  const imageBox = document.createElement("div");
-  imageBox.className = "preview-card-image";
-  imageBox.innerHTML = job.svgString;
+  const originalUrl = URL.createObjectURL(job.file);
 
-  const body = document.createElement("div");
-  body.className = "preview-card-body";
+  card.innerHTML = `
+    <div class="compare-view">
+      <div class="compare-pane original">
+        <img src="${originalUrl}" alt="원본" />
+        <span class="pane-label">원본</span>
+      </div>
+      <div class="compare-pane result checkerboard">
+        <div class="svg-zoom-wrap"><div class="svg-holder">${job.svgString}</div></div>
+        <span class="pane-label">SVG 결과</span>
+        <div class="overlay-holder" style="opacity:0"></div>
+      </div>
+    </div>
 
-  const name = document.createElement("div");
-  name.className = "preview-card-name";
-  name.textContent = toSvgFilename(job.file.name);
-  name.title = toSvgFilename(job.file.name);
+    <div class="compare-controls">
+      <div class="control-row">
+        <button type="button" class="chip-btn" data-bg="transparent">투명</button>
+        <button type="button" class="chip-btn active" data-bg="white">흰 배경</button>
+        <span class="sep"></span>
+        <button type="button" class="chip-btn active" data-view="all">전체</button>
+        <button type="button" class="chip-btn" data-view="outline">외곽선만</button>
+        <button type="button" class="chip-btn" data-view="colors">색상면만</button>
+        <button type="button" class="chip-btn" data-view="small">작은 조각 표시</button>
+      </div>
+      <div class="control-row">
+        <label class="slider-label">겹쳐보기(원본↔결과)
+          <input type="range" class="overlay-slider" min="0" max="100" value="0" />
+        </label>
+        <label class="slider-label">확대
+          <input type="range" class="zoom-slider" min="100" max="400" value="100" />
+        </label>
+      </div>
+    </div>
 
-  const downloadBtn = document.createElement("button");
-  downloadBtn.className = "btn btn-outline";
-  downloadBtn.textContent = "⬇️ SVG 다운로드";
-  downloadBtn.addEventListener("click", () => downloadSingleSvg(job));
+    <div class="stats-row">
+      path ${job.stats.totalPaths}개 · anchor point ${job.stats.totalAnchors}개 · ${job.width}×${job.height}px
+    </div>
 
-  body.append(name, downloadBtn);
-  card.append(imageBox, body);
+    <div class="preview-card-body">
+      <div class="preview-card-name" title="${toSvgFilename(job.file.name)}">${toSvgFilename(job.file.name)}</div>
+      <div class="card-actions">
+        <button type="button" class="btn btn-outline btn-svg">⬇️ SVG 다운로드</button>
+        <button type="button" class="btn btn-outline btn-png">🖼️ PNG 미리보기 저장</button>
+      </div>
+    </div>
+  `;
+
+  wireCardInteractions(card, job);
   previewGrid.appendChild(card);
+}
+
+function wireCardInteractions(card, job) {
+  const svgHolder = card.querySelector(".svg-holder");
+  const resultPane = card.querySelector(".compare-pane.result");
+  const zoomWrap = card.querySelector(".svg-zoom-wrap");
+
+  card.querySelectorAll("[data-bg]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      card.querySelectorAll("[data-bg]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      const bg = btn.dataset.bg;
+      resultPane.classList.toggle("checkerboard", bg === "transparent");
+      resultPane.classList.toggle("white-bg", bg === "white");
+    });
+  });
+
+  card.querySelectorAll("[data-view]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      card.querySelectorAll("[data-view]").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      applyViewFilter(svgHolder, btn.dataset.view);
+    });
+  });
+
+  const overlaySlider = card.querySelector(".overlay-slider");
+  const originalImg = card.querySelector(".compare-pane.original img");
+  const overlayHolder = card.querySelector(".overlay-holder");
+  overlayHolder.style.backgroundImage = `url(${originalImg.src})`;
+  overlayHolder.style.backgroundSize = "contain";
+  overlayHolder.style.backgroundRepeat = "no-repeat";
+  overlayHolder.style.backgroundPosition = "center";
+  overlaySlider.addEventListener("input", () => {
+    overlayHolder.style.opacity = String(overlaySlider.value / 100);
+  });
+
+  const zoomSlider = card.querySelector(".zoom-slider");
+  zoomSlider.addEventListener("input", () => {
+    const scale = zoomSlider.value / 100;
+    zoomWrap.style.transform = `scale(${scale})`;
+    zoomWrap.style.transformOrigin = "center";
+  });
+
+  card.querySelector(".btn-svg").addEventListener("click", () => downloadSingleSvg(job));
+  card.querySelector(".btn-png").addEventListener("click", () => downloadSinglePng(job));
+}
+
+function applyViewFilter(svgHolder, view) {
+  const svg = svgHolder.querySelector("svg");
+  if (!svg) return;
+  const allGroups = [...FILL_GROUPS, ...LINE_GROUPS];
+
+  for (const name of allGroups) {
+    const g = svg.querySelector(`#${CSS.escape(name)}`);
+    if (!g) continue;
+    if (view === "all") g.style.display = "";
+    else if (view === "outline") g.style.display = name === "outline" ? "" : "none";
+    else if (view === "colors") g.style.display = LINE_GROUPS.includes(name) ? "none" : "";
+    else if (view === "small") g.style.display = "";
+  }
+
+  // "작은 조각 표시": highlight the smallest-area 10% of fill paths in
+  // magenta so leftover noise fragments are easy to spot at a glance.
+  svg.querySelectorAll("path[data-small-highlight]").forEach((p) => p.removeAttribute("data-small-highlight"));
+  if (view === "small") {
+    const fillPaths = Array.from(svg.querySelectorAll("g:not(#outline):not(#laces):not(#stitching) path"));
+    const areas = fillPaths.map((p) => estimatePathArea(p));
+    const sorted = [...areas].sort((a, b) => a - b);
+    const cutoff = sorted[Math.max(0, Math.floor(sorted.length * 0.1) - 1)] ?? 0;
+    fillPaths.forEach((p, i) => {
+      if (areas[i] <= cutoff && areas[i] > 0) {
+        p.setAttribute("data-small-highlight", "1");
+        p.style.outline = "1px solid magenta";
+      } else {
+        p.style.outline = "";
+      }
+    });
+  } else {
+    svgHolder.querySelectorAll("path").forEach((p) => (p.style.outline = ""));
+  }
+}
+
+function estimatePathArea(pathEl) {
+  try {
+    const bbox = pathEl.getBBox();
+    return bbox.width * bbox.height;
+  } catch {
+    return 0;
+  }
 }
 
 function downloadSingleSvg(job) {
   const blob = new Blob([job.svgString], { type: "image/svg+xml" });
   saveAs(blob, toSvgFilename(job.file.name));
+}
+
+async function downloadSinglePng(job) {
+  const blob = await svgToPngBlob(job.svgString, job.width, job.height, 2);
+  saveAs(blob, toPngFilename(job.file.name));
+}
+
+function svgToPngBlob(svgString, width, height, scale = 2) {
+  return new Promise((resolve, reject) => {
+    const svgBlob = new Blob([svgString], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = width * scale;
+      canvas.height = height * scale;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("PNG 변환에 실패했습니다."));
+      }, "image/png");
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("SVG를 PNG로 렌더링하는 데 실패했습니다."));
+    };
+    img.src = url;
+  });
 }
 
 async function downloadAllAsZip() {

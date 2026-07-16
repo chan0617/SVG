@@ -10,7 +10,7 @@
   <div class="app">
     <header class="app-header">
       <h1>🖼️ → 📐 이미지 SVG 벡터화 변환기</h1>
-      <p class="subtitle">이미지를 업로드하면 브라우저 안에서 바로 path 기반 SVG로 변환합니다. 서버로 전송되는 데이터는 없습니다.</p>
+      <p class="subtitle">전처리 → 영역 분할 → 선 검출 → 벡터화 → 곡선 보정 → 조각 정리, 다단계 파이프라인으로 고품질 SVG를 생성합니다. 모든 처리는 브라우저 안에서만 이루어집니다.</p>
     </header>
 
     <main>
@@ -30,11 +30,52 @@
         </div>
       </section>
 
-      <p class="notice">
-        ⚠️ 참고: 로고, 아이콘, 단순한 일러스트, 흑백 이미지는 결과가 깔끔하게 나옵니다.
-        하지만 사람 얼굴, 풍경 사진처럼 <strong>복잡하고 색이 많은 사진은 완벽한 벡터화가 어려우며</strong>,
-        결과물이 원본과 다르게 보일 수 있습니다.
-      </p>
+      <section class="settings-panel">
+        <div class="preset-row">
+          <button class="preset-btn" data-preset="icon">
+            <strong>A. 로고 / 아이콘</strong>
+            <span>적은 색상 · 선명한 외곽선 · 적은 path</span>
+          </button>
+          <button class="preset-btn active" data-preset="illustration">
+            <strong>B. 캐릭터 / 일러스트</strong>
+            <span>곡선·내부 선 보존 · 봉제선·세부선 유지</span>
+          </button>
+          <button class="preset-btn" data-preset="product">
+            <strong>C. 제품 이미지</strong>
+            <span>명암 면 보존 · 높은 색상 수 · 디테일 우선</span>
+          </button>
+        </div>
+
+        <details class="advanced-settings" open>
+          <summary>세부 설정</summary>
+          <div class="settings-grid">
+            <label class="setting-item">
+              <span>색상 수 <output id="color-count-value">14</output></span>
+              <input type="range" id="color-count" min="4" max="32" step="1" value="14" />
+            </label>
+            <label class="setting-item">
+              <span>Path Smoothing <output id="smoothing-value">48</output></span>
+              <input type="range" id="smoothing" min="0" max="100" step="1" value="48" />
+            </label>
+            <label class="setting-item checkbox">
+              <input type="checkbox" id="keep-shading" checked />
+              <span>내부 명암 면 유지</span>
+            </label>
+            <label class="setting-item checkbox">
+              <input type="checkbox" id="detect-lines" checked />
+              <span>얇은 선(끈·봉제선) 검출</span>
+            </label>
+            <label class="setting-item checkbox">
+              <input type="checkbox" id="remove-shadow" />
+              <span>바닥 그림자 제거</span>
+            </label>
+            <label class="setting-item checkbox">
+              <input type="checkbox" id="use-css-classes" checked />
+              <span>동일 색상 CSS class로 정리</span>
+            </label>
+          </div>
+        </details>
+      </section>
 
       <section id="file-list-section" class="file-list-section hidden">
         <div class="section-header">
